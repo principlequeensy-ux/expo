@@ -3,8 +3,8 @@ import { ConfigPlugin, withDangerousMod } from 'expo/config-plugins';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { WidgetConfig } from './types/WidgetConfig.type';
-import { WidgetFamily } from './types/WidgetFamily.type';
+import { WidgetConfig } from '../types/WidgetConfig.type';
+import { WidgetFamily } from '../types/WidgetFamily.type';
 
 type WidgetSourceFilesProps = {
   targetName: string;
@@ -31,11 +31,13 @@ function assertWidgetFamily(value: unknown): asserts value is WidgetFamily {
 
 function validateWidget(widget: WidgetConfig): void {
   assertSwiftIdentifier(widget.name, 'widget name');
-  for (const family of widget.supportedFamilies) {
+  const supportedFamilies = widget.ios?.supportedFamilies ?? widget.supportedFamilies ?? [];
+  for (const family of supportedFamilies) {
     assertWidgetFamily(family);
   }
-  if (widget.configuration) {
-    for (const [paramName, param] of Object.entries(widget.configuration.parameters)) {
+  const configuration = widget.ios?.configuration ?? widget.configuration;
+  if (configuration) {
+    for (const [paramName, param] of Object.entries(configuration.parameters)) {
       assertSwiftIdentifier(paramName, 'parameter name');
       if (param.type === 'number' && typeof param.default !== 'number') {
         throw new Error(`Invalid default for ${JSON.stringify(paramName)}: must be a number.`);
@@ -56,6 +58,9 @@ const withWidgetSourceFiles: ConfigPlugin<WidgetSourceFilesProps> = (
   { widgets, targetName, onFilesGenerated, groupIdentifier }
 ) => {
   for (const widget of widgets) {
+    if (widget.ios === null) {
+      continue;
+    }
     validateWidget(widget);
   }
   return withDangerousMod(config, [
@@ -85,7 +90,9 @@ const withWidgetSourceFiles: ConfigPlugin<WidgetSourceFilesProps> = (
         existingInfoPlist
       );
       const indexSwiftPath = createIndexSwift(widgets, targetDirectory);
-      const widgetSwiftPaths = widgets.map((widget) => createWidgetSwift(widget, targetDirectory));
+      const widgetSwiftPaths = widgets
+        .filter((widget) => widget.ios !== null)
+        .map((widget) => createWidgetSwift(widget, targetDirectory));
 
       onFilesGenerated([entitlementsPath, infoPlistPath, indexSwiftPath, ...widgetSwiftPaths]);
 
@@ -161,7 +168,10 @@ struct ExportWidgets${index}: WidgetBundle {
   var body: some Widget {
     ${widgets
       .map((widget) => {
-        if (widget.configuration) {
+        if (widget.ios === null) {
+          return '';
+        }
+        if (widget.ios?.configuration ?? widget.configuration) {
           return `if #available(iOS 17.0, *) {
       ${widget.name}()
     }`;
@@ -174,7 +184,11 @@ struct ExportWidgets${index}: WidgetBundle {
 }`;
 
 const widgetSwift = (widget: WidgetConfig): string => {
-  if (!widget.configuration)
+  const configuration = widget.ios?.configuration ?? widget.configuration;
+  const supportedFamilies = widget.ios?.supportedFamilies ?? widget.supportedFamilies ?? [];
+  const contentMarginsDisabled =
+    widget.ios?.contentMarginsDisabled ?? widget.contentMarginsDisabled;
+  if (!configuration)
     return `import WidgetKit
 import SwiftUI
 internal import ExpoWidgets
@@ -188,7 +202,7 @@ struct ${widget.name}: Widget {
     }
     .configurationDisplayName(${JSON.stringify(widget.displayName)})
     .description(${JSON.stringify(widget.description)})
-    .supportedFamilies([.${widget.supportedFamilies.join(', .')}])${widget.contentMarginsDisabled ? '\n    .contentMarginsDisabled()' : ''}
+    .supportedFamilies([.${supportedFamilies.join(', .')}])${contentMarginsDisabled ? '\n    .contentMarginsDisabled()' : ''}
   }
 }`;
   return `import WidgetKit
@@ -198,9 +212,9 @@ internal import ExpoWidgets
 
 // AppIntent
 struct ${widget.name}ConfigurationAppIntent: WidgetConfigurationIntent {
-  static var title: LocalizedStringResource = ${JSON.stringify(`${widget.configuration?.title ?? widget.displayName} Configuration`)}
-${widget.configuration?.description ? `  static var description: LocalizedStringResource = ${JSON.stringify(widget.configuration.description)}\n` : ''}
-${Object.entries(widget.configuration?.parameters ?? {})
+  static var title: LocalizedStringResource = ${JSON.stringify(`${configuration?.title ?? widget.displayName} Configuration`)}
+${configuration?.description ? `  static var description: LocalizedStringResource = ${JSON.stringify(configuration.description)}\n` : ''}
+${Object.entries(configuration?.parameters ?? {})
   .map(([name, param]) => {
     let paramType: string;
     switch (param.type) {
@@ -227,7 +241,7 @@ ${Object.entries(widget.configuration?.parameters ?? {})
     return .result()
   }
 }
-${Object.entries(widget.configuration?.parameters ?? {})
+${Object.entries(configuration?.parameters ?? {})
   .map(([name, param]) => {
     if (param.type !== 'enum') return '';
     const paramTypeName = `${widget.name}${name[0]?.toUpperCase() + name.slice(1)}Enum`;
@@ -307,7 +321,7 @@ struct ${widget.name}EntryView: View {
     var env: [String: Any] = getWidgetEnvironment(environment: environment)
     env["timestamp"] = Int(entry.date.timeIntervalSince1970 * 1000)
     env["configuration"] = [
-${Object.entries(widget.configuration?.parameters ?? {})
+${Object.entries(configuration?.parameters ?? {})
   .map(([name, param]) => {
     return `      "${name}": entry.configuration.${name}${param.type === 'enum' ? '.rawValue' : ''}`;
   })
@@ -346,7 +360,7 @@ struct ${widget.name}: Widget {
     }
     .configurationDisplayName(${JSON.stringify(widget.displayName)})
     .description(${JSON.stringify(widget.description)})
-    .supportedFamilies([.${widget.supportedFamilies.join(', .')}])${widget.contentMarginsDisabled ? '\n    .contentMarginsDisabled()' : ''}
+    .supportedFamilies([.${supportedFamilies.join(', .')}])${contentMarginsDisabled ? '\n    .contentMarginsDisabled()' : ''}
   }
 }`;
 };
